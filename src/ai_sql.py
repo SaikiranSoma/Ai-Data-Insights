@@ -234,6 +234,96 @@ def generate_sql_plan(
     return plan
 
 
+def repair_sql_plan(
+    api_key: str,
+    question: str,
+    tables: dict[str, pd.DataFrame],
+    failed_plan: dict[str, Any],
+    database_error: str,
+) -> dict[str, Any]:
+    """
+    Ask the model to repair one failed SQL query.
+
+    This function must only be called once per user question.
+    """
+
+    schema_context = build_schema_context(tables)
+
+    original_sql = str(failed_plan.get("sql", ""))[:10_000]
+    safe_error = (
+        str(database_error)
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )[:1_500]
+
+    repair_prompt = f"""
+The previous SQL query failed.
+
+Original user question:
+{question}
+
+Failed SQL:
+{original_sql}
+
+DuckDB error:
+{safe_error}
+
+Available schema:
+{schema_context}
+
+Repair instructions:
+
+1. Preserve the user's original analytical intent.
+2. Correct only the SQL problem.
+3. Use only tables and columns from the schema.
+4. Return only read-only DuckDB SQL.
+5. Do not invent missing columns or relationships.
+6. If the query cannot be repaired safely, return
+   status "needs_clarification".
+"""
+
+    client = Groq(api_key=api_key)
+
+    response = client.chat.completions.create(
+        model=MODEL_ID,
+        messages=[
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": repair_prompt,
+            },
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "repaired_duckdb_sql_plan",
+                "strict": True,
+                "schema": SQL_PLAN_SCHEMA,
+            },
+        },
+        max_completion_tokens=1_200,
+    )
+
+    content = response.choices[0].message.content
+
+    if not content:
+        raise RuntimeError(
+            "The AI returned an empty SQL repair response."
+        )
+
+    repaired_plan = json.loads(content)
+
+    _validate_plan(
+        repaired_plan,
+        set(tables.keys()),
+    )
+
+    return repaired_plan
+
+
 def _validate_plan(
     plan: dict[str, Any],
     allowed_tables: set[str],

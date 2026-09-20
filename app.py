@@ -2,7 +2,9 @@ import os
 
 import pandas as pd
 import streamlit as st
-from src.ai_sql import generate_sql_plan
+from datetime import datetime, timezone
+
+from src.analysis_service import run_reliable_analysis
 from src.data_workspace import (
     load_uploaded_files,
     profile_dataframe,
@@ -48,6 +50,12 @@ if "catalog" not in st.session_state:
 
 if "load_errors" not in st.session_state:
     st.session_state.load_errors = []
+
+if "analysis_history" not in st.session_state:
+    st.session_state.analysis_history = []
+
+if "last_execution" not in st.session_state:
+    st.session_state.last_execution = None
 
 
 uploaded_files = st.file_uploader(
@@ -209,6 +217,7 @@ if ask_button:
     st.session_state.ai_plan = None
     st.session_state.ai_result = None
     st.session_state.ai_question = question
+    st.session_state.last_execution = None
 
     if not api_key:
         st.error(
@@ -220,32 +229,59 @@ if ask_button:
         st.warning("Enter a question before running the analysis.")
 
     else:
-        try:
-            with st.spinner(
-                "Understanding the question and generating SQL..."
-            ):
-                plan = generate_sql_plan(
-                    api_key=api_key,
-                    question=question,
-                    tables=tables,
+        with st.spinner(
+            "Generating, validating and executing the analysis..."
+        ):
+            outcome = run_reliable_analysis(
+                api_key=api_key,
+                question=question,
+                tables=tables,
+            )
+
+        st.session_state.ai_plan = outcome["plan"]
+        st.session_state.ai_result = outcome["result"]
+
+        history_entry = {
+            "timestamp": datetime.now(
+                timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "question": question,
+            "status": outcome["status"],
+            "repair_used": outcome["repair_used"],
+            "rows_returned": outcome["rows_returned"],
+            "truncated": outcome["truncated"],
+            "query_ms": outcome["query_execution_ms"],
+            "total_ms": outcome["total_execution_ms"],
+            "feedback": "",
+        }
+
+        st.session_state.analysis_history.append(history_entry)
+        st.session_state.last_execution = history_entry
+
+        if outcome["status"] == "success":
+            if outcome["repair_used"]:
+                st.warning(
+                    "The first generated SQL failed. The application "
+                    "repaired it once and successfully executed the "
+                    "corrected query."
+                )
+            else:
+                st.success(
+                    "SQL validated and executed successfully."
                 )
 
-                st.session_state.ai_plan = plan
+        elif outcome["status"] == "needs_clarification":
+            clarification = outcome["plan"][
+                "clarification_question"
+            ]
 
-            if plan["status"] == "needs_clarification":
-                st.warning(plan["clarification_question"])
+            st.warning(clarification)
 
-            else:
-                with st.spinner("Running the generated SQL..."):
-                    result = run_read_only_query(
-                        tables=tables,
-                        query=plan["sql"],
-                    )
-
-                    st.session_state.ai_result = result
-
-        except Exception as error:
-            st.error(f"Analysis failed: {error}")
+        else:
+            st.error(
+                "The analysis could not be completed safely. "
+                f"Details: {outcome['error']}"
+            )
 
 
 plan = st.session_state.ai_plan
@@ -351,4 +387,85 @@ if isinstance(result, pd.DataFrame):
             data=csv_data,
             file_name="analysis_result.csv",
             mime="text/csv",
+        )
+
+
+execution = st.session_state.last_execution
+
+if execution:
+    with st.expander("Execution details"):
+        detail_columns = st.columns(4)
+
+        detail_columns[0].metric(
+            "Status",
+            execution["status"].replace("_", " ").title(),
+        )
+
+        detail_columns[1].metric(
+            "SQL Repair",
+            "Used" if execution["repair_used"] else "Not needed",
+        )
+
+        detail_columns[2].metric(
+            "Rows",
+            f"{execution['rows_returned']:,}",
+        )
+
+        detail_columns[3].metric(
+            "Query Time",
+            f"{execution['query_ms']:,.2f} ms",
+        )
+
+        if execution["truncated"]:
+            st.warning(
+                "The result exceeded 1,000 rows and was truncated."
+            )
+
+if (
+    execution
+    and execution["status"] == "success"
+    and st.session_state.analysis_history
+):
+    st.write("**Was this analysis correct?**")
+
+    positive_column, negative_column = st.columns(2)
+
+    current_history_index = (
+        len(st.session_state.analysis_history) - 1
+    )
+
+    with positive_column:
+        if st.button(
+            "Correct",
+            key=f"correct_{current_history_index}",
+            use_container_width=True,
+        ):
+            st.session_state.analysis_history[
+                current_history_index
+            ]["feedback"] = "correct"
+
+            st.success("Feedback recorded for this session.")
+
+    with negative_column:
+        if st.button(
+            "Incorrect",
+            key=f"incorrect_{current_history_index}",
+            use_container_width=True,
+        ):
+            st.session_state.analysis_history[
+                current_history_index
+            ]["feedback"] = "incorrect"
+
+            st.warning("Feedback recorded for this session.")
+
+if st.session_state.analysis_history:
+    with st.expander("Session analysis history"):
+        history_dataframe = pd.DataFrame(
+            st.session_state.analysis_history
+        )
+
+        st.dataframe(
+            history_dataframe,
+            use_container_width=True,
+            hide_index=True,
         )

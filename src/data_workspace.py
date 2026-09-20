@@ -7,6 +7,8 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+import threading
+import time
 
 
 def clean_table_name(name: str) -> str:
@@ -168,43 +170,130 @@ def profile_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(profile_rows)
 
 
-def run_read_only_query(
-    tables: dict[str, pd.DataFrame],
-    query: str,
-) -> pd.DataFrame:
-    """Execute a read-only SQL query against the uploaded tables."""
+def validate_read_only_query(query: str) -> str:
+    """Validate and normalize SQL before execution."""
 
     normalized_query = query.strip()
-    query_without_last_semicolon = normalized_query.rstrip(";")
+    cleaned_query = normalized_query.rstrip(";").strip()
 
-    if not query_without_last_semicolon.lower().startswith(
-        ("select", "with")
-    ):
-        raise ValueError("Only SELECT queries are allowed.")
+    if not cleaned_query:
+        raise ValueError("SQL query cannot be empty.")
 
-    if ";" in query_without_last_semicolon:
-        raise ValueError("Only one SQL statement is allowed.")
+    if len(cleaned_query) > 20_000:
+        raise ValueError("SQL query is unexpectedly long.")
+
+    if not cleaned_query.lower().startswith(("select", "with")):
+        raise ValueError(
+            "Only SELECT statements and WITH queries are allowed."
+        )
+
+    if ";" in cleaned_query:
+        raise ValueError(
+            "Multiple SQL statements are not allowed."
+        )
 
     forbidden_keywords = re.compile(
         r"\b("
         r"insert|update|delete|drop|alter|create|replace|"
-        r"copy|attach|detach|install|load|export|import|pragma|call"
+        r"copy|attach|detach|install|load|export|import|"
+        r"pragma|call|vacuum|truncate|grant|revoke|set|reset"
         r")\b",
         re.IGNORECASE,
     )
 
-    if forbidden_keywords.search(query_without_last_semicolon):
-        raise ValueError("The query contains a forbidden operation.")
+    if forbidden_keywords.search(cleaned_query):
+        raise ValueError(
+            "The SQL contains a forbidden operation."
+        )
+
+    return cleaned_query
+
+
+def run_read_only_query(
+    tables: dict[str, pd.DataFrame],
+    query: str,
+    max_rows: int = 1_000,
+    timeout_seconds: float = 8.0,
+) -> pd.DataFrame:
+    """
+    Execute guarded read-only SQL.
+
+    Protections:
+        Read-only validation
+        External access disabled
+        Query timeout
+        Maximum result size
+        DuckDB syntax and binding validation
+    """
+
+    cleaned_query = validate_read_only_query(query)
+
+    if max_rows < 1:
+        raise ValueError("max_rows must be at least 1.")
 
     connection = duckdb.connect(
         database=":memory:",
         config={"enable_external_access": "false"},
     )
 
+    timed_out = threading.Event()
+    timeout_timer: threading.Timer | None = None
+    started_at = time.perf_counter()
+
+    def interrupt_query() -> None:
+        timed_out.set()
+        connection.interrupt()
+
     try:
         for table_name, dataframe in tables.items():
             connection.register(table_name, dataframe)
 
-        return connection.execute(query_without_last_semicolon).df()
+        # Validate syntax, tables and columns before execution.
+        connection.execute(f"EXPLAIN {cleaned_query}")
+
+        limited_query = (
+            "SELECT * FROM ("
+            f"{cleaned_query}"
+            ") AS guarded_result "
+            f"LIMIT {max_rows + 1}"
+        )
+
+        if timeout_seconds > 0:
+            timeout_timer = threading.Timer(
+                timeout_seconds,
+                interrupt_query,
+            )
+            timeout_timer.daemon = True
+            timeout_timer.start()
+
+        result = connection.execute(limited_query).df()
+
+        was_truncated = len(result) > max_rows
+
+        if was_truncated:
+            result = result.iloc[:max_rows].copy()
+
+        execution_ms = round(
+            (time.perf_counter() - started_at) * 1_000,
+            2,
+        )
+
+        result.attrs["truncated"] = was_truncated
+        result.attrs["execution_ms"] = execution_ms
+        result.attrs["row_limit"] = max_rows
+
+        return result
+
+    except Exception as error:
+        if timed_out.is_set():
+            raise TimeoutError(
+                f"Query exceeded the {timeout_seconds}-second limit."
+            ) from error
+
+        raise
+
     finally:
+        if timeout_timer is not None:
+            timeout_timer.cancel()
+
         connection.close()
