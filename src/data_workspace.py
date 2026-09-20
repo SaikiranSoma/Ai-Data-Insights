@@ -22,3 +22,15 @@ def clean_table_name(name: str) -> str:
         cleaned = f"table_{cleaned}"
 
     return cleaned
+
+def unique_table_name(base_name: str, existing_names: set[str]) -> str:
+    """Prevent tables from overwriting each other."""
+
+    name = base_name
+    counter = 2
+
+    while name in existing_names:
+        name = f"{base_name}_{counter}"
+        counter += 1
+
+    return name
