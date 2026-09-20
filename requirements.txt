@@ -1,1 +1,5 @@
-plotly
+duckdb==1.5.5
+groq==1.7.0
+openpyxl==3.1.5
+plotly==7.1.0
+xlrd==2.0.2
