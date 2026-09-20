@@ -1,5 +1,5 @@
 AI Data Insights
-
+Application link  -https://ai-data-insights-3cdc6n5n8ohghdceihrzum.streamlit.app/
 AI Data Insights is a domain-independent web application that lets users upload one or more CSV or Excel files, ask analytical questions in plain English, and receive calculated answers, SQL transparency, KPI summaries, and interactive visualizations.
 
 The language model interprets the question and generates a structured SQL plan. DuckDB, not the language model, performs the calculations against the uploaded data.
