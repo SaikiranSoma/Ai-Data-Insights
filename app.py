@@ -1,11 +1,13 @@
-import streamlit as st
+import os
 
+import pandas as pd
+import streamlit as st
+from src.ai_sql import generate_sql_plan
 from src.data_workspace import (
     load_uploaded_files,
     profile_dataframe,
     run_read_only_query,
 )
-
 
 st.set_page_config(
     page_title="AI Data Insights",
@@ -13,9 +15,24 @@ st.set_page_config(
     layout="wide",
 )
 
+def get_groq_api_key() -> str | None:
+    try:
+        return st.secrets["GROQ_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        return os.getenv("GROQ_API_KEY")
+
 st.title("AI Data Insights")
 st.caption("Upload CSV or Excel files and explore them as SQL tables.")
 
+
+if "ai_plan" not in st.session_state:
+    st.session_state.ai_plan = None
+
+if "ai_result" not in st.session_state:
+    st.session_state.ai_result = None
+
+if "ai_question" not in st.session_state:
+    st.session_state.ai_question = ""
 
 if "tables" not in st.session_state:
     st.session_state.tables = {}
@@ -156,3 +173,112 @@ if st.button("Run SQL"):
 
     except Exception as error:
         st.error(f"Query failed: {error}")
+
+
+#Phase 3
+
+st.divider()
+st.subheader("Ask your data")
+
+st.caption(
+    "Ask analytical questions using totals, averages, filters, "
+    "comparisons, trends or cross-file joins."
+)
+
+question = st.text_input(
+    "Enter your question",
+    placeholder="Example: Which region generated the highest total sales?",
+)
+
+ask_button = st.button(
+    "Generate and run analysis",
+    type="primary",
+    use_container_width=True,
+)
+
+
+if ask_button:
+    api_key = get_groq_api_key()
+
+    st.session_state.ai_plan = None
+    st.session_state.ai_result = None
+    st.session_state.ai_question = question
+
+    if not api_key:
+        st.error(
+            "GROQ_API_KEY was not found. Add it to "
+            ".streamlit/secrets.toml."
+        )
+
+    elif not question.strip():
+        st.warning("Enter a question before running the analysis.")
+
+    else:
+        try:
+            with st.spinner(
+                "Understanding the question and generating SQL..."
+            ):
+                plan = generate_sql_plan(
+                    api_key=api_key,
+                    question=question,
+                    tables=tables,
+                )
+
+                st.session_state.ai_plan = plan
+
+            if plan["status"] == "needs_clarification":
+                st.warning(plan["clarification_question"])
+
+            else:
+                with st.spinner("Running the generated SQL..."):
+                    result = run_read_only_query(
+                        tables=tables,
+                        query=plan["sql"],
+                    )
+
+                    st.session_state.ai_result = result
+
+        except Exception as error:
+            st.error(f"Analysis failed: {error}")
+
+
+plan = st.session_state.ai_plan
+result = st.session_state.ai_result
+
+
+if plan:
+    if plan["status"] == "ready":
+        st.write("**AI interpretation**")
+
+        st.write(plan["explanation"])
+
+        st.write("**Tables used**")
+
+        st.write(", ".join(plan["tables_used"]))
+
+        st.write("**Confidence**")
+
+        st.progress(
+            min(max(float(plan["confidence"]), 0.0), 1.0)
+        )
+
+        with st.expander("View generated SQL"):
+            st.code(plan["sql"], language="sql")
+
+    elif plan["status"] == "needs_clarification":
+        st.info(
+            "The AI needs more information before generating SQL."
+        )
+
+
+if isinstance(result, pd.DataFrame):
+    st.write("**Query result**")
+
+    if result.empty:
+        st.info("The query ran successfully but returned no rows.")
+    else:
+        st.dataframe(
+            result,
+            use_container_width=True,
+            hide_index=True,
+        )
