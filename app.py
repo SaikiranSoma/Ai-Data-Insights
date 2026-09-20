@@ -9,6 +9,12 @@ from src.data_workspace import (
     run_read_only_query,
 )
 
+from src.insights import (
+    build_kpis,
+    build_summary,
+    create_automatic_chart,
+)
+
 st.set_page_config(
     page_title="AI Data Insights",
     page_icon="📊",
@@ -272,13 +278,77 @@ if plan:
 
 
 if isinstance(result, pd.DataFrame):
-    st.write("**Query result**")
+    st.divider()
+    st.subheader("Analysis result")
+
+    question_used = st.session_state.ai_question
 
     if result.empty:
-        st.info("The query ran successfully but returned no rows.")
+        st.info(
+            "The query ran successfully but returned no matching rows."
+        )
+
     else:
+        summary = build_summary(
+            question=question_used,
+            dataframe=result,
+        )
+
+        st.write("**Answer**")
+        st.info(summary)
+
+        kpis = build_kpis(result)
+
+        if kpis:
+            metric_columns = st.columns(len(kpis))
+
+            for metric_column, (label, value) in zip(
+                metric_columns,
+                kpis,
+            ):
+                metric_column.metric(
+                    label=label,
+                    value=value,
+                )
+
+        figure, chart_reason = create_automatic_chart(
+            question=question_used,
+            dataframe=result,
+        )
+
+        if figure is not None:
+            st.write("**Visual insight**")
+
+            st.plotly_chart(
+                figure,
+                width="stretch",
+                theme="streamlit",
+            )
+
+            st.caption(chart_reason)
+
+            if len(result) > 30:
+                st.caption(
+                    "The chart shows the first 30 result rows "
+                    "to remain readable."
+                )
+
+        else:
+            st.caption(chart_reason)
+
+        st.write("**Result data**")
+
         st.dataframe(
             result,
             use_container_width=True,
             hide_index=True,
+        )
+
+        csv_data = result.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            label="Download result as CSV",
+            data=csv_data,
+            file_name="analysis_result.csv",
+            mime="text/csv",
         )
