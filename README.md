@@ -188,7 +188,7 @@ Local installation on Windows
 1. Clone the repository
 
 git clone https://github.com/SaikiranSoma/Ai-Data-Insights
-Ai-Data-Insights.git
+
 cd Ai-Data-Insights
 
 2. Create the virtual environment
