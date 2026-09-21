@@ -4,7 +4,9 @@ Upload CSV or Excel files, ask questions in plain English, and get calculated an
 
 The language model only interprets the question and proposes a SQL plan. DuckDB performs every calculation against the uploaded data, so numbers are traceable rather than generated.
 
-Live app: https://ai-data-insights-3cdc6n5n8ohghdceihrzum.streamlit.app/ Source: https://github.com/SaikiranSoma/Ai-Data-Insights Demo video: YOUR_DEMO_VIDEO_URL
+Live app: https://ai-data-insights-3cdc6n5n8ohghdceihrzum.streamlit.app/ 
+Source Code link: https://github.com/SaikiranSoma/Ai-Data-Insights 
+Demo video: https://drive.google.com/file/d/1KCRjQUWaXYFhyHAmXRm4_FiRFOIo2iUY/view?usp=sharing
 
 Table of contents
 Features
